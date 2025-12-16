@@ -3,3 +3,6 @@ google-generativeai
 numpy
 python-dotenv
 duckduckgo-search
+streamlit
+pandas
+folium
