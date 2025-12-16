@@ -1,0 +1,15 @@
+[Unit]
+Description=Discord Noise Bot
+After=network.target
+
+[Service]
+# ユーザー名は環境に合わせて変更してください (例: ubuntu, gcp-user)
+User=ubuntu
+WorkingDirectory=/home/ubuntu/discord_noise_bot
+ExecStart=/usr/bin/python3 bot.py
+Restart=always
+# 環境変数を直接指定する場合（.envを使わない場合）
+# Environment=DISCORD_TOKEN=your_token_here
+
+[Install]
+WantedBy=multi-user.target
