@@ -8,7 +8,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 import numpy as np
 import google.generativeai as genai
-from duckduckgo_search import DDGS
+
 
 # ==========================================
 # CONFIGURATION
@@ -234,14 +234,7 @@ async def create_personal_channel(member):
              db["users"][user_id]["expose_count"] = 0
         db["users"][user_id]["onboarding_status"] = "started" # 再実行時もステータスリセット
 
-    # 興味関心設定の初期化 (既存・新規問わず確認)
-    if "recommendation" not in db["users"][user_id]:
-        db["users"][user_id]["recommendation"] = {
-            "enabled": False,
-            "interval_days": 3,
-            "last_run": None
-        }
-             
+
     save_db(db)
 
     # ウェルカムメッセージ
@@ -396,159 +389,10 @@ async def simulate_ai_connection(guild, author, content, forced_keyword=None):
     await log_channel.send(embed=embed)
 
 
-async def perform_recommendation(user_id, user_data, guild):
-    """
-    ユーザーの興味関心に基づいた記事を推薦する
-    """
-    channel_id = user_data["channel_id"]
-    channel = guild.get_channel(channel_id)
-    if not channel:
-        return
-
-    print(f"Running recommendation for user {user_id}...")
-
-    # 1. 最近の履歴取得 (直近20件)
-    history_content = []
-    # historyがリストとして保存されているので後ろから取得
-    recent_history = user_data.get("history", [])[-20:]
-    for h in recent_history:
-        history_content.append(h["content"])
-    
-    if not history_content:
-        return
-
-    joined_history = "\n".join(history_content)
-
-    # 2. Geminiで検索クエリ生成
-    # 2. Geminiで検索クエリ生成
-    prompt = f"""
-    以下のユーザーの発言履歴から、現在このユーザーが最も興味を持っている具体的なトピックを分析し、
-    Web検索用の検索クエリを3つ生成してください。また、なぜそのクエリを選んだのか、ユーザーの発言に基づいた理由も添えてください。
-    
-    発言履歴:
-    {joined_history}
-    
-    条件:
-    - 具体的でニッチなキーワードを含めること
-    - JSON形式のリスト [{{ "query": "検索クエリ", "reason": "選定理由" }}, ...] で返すこと
-    - "reason" は「あなたは〜と言っていたので」「最近〜に興味があるようなので」のように、ユーザーへの語りかけ口調で短く記述すること
-    - 余計な説明は省くこと
-    """
-    
-    search_queries = []
-    try:
-        model = genai.GenerativeModel('gemini-flash-latest')
-        response = model.generate_content(prompt)
-        text = response.text.strip()
-        # JSON部分だけ抽出（マークダウン対策）
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0].strip()
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0].strip()
-            
-        search_queries = json.loads(text)
-    except Exception as e:
-        print(f"Gemini Query Gen Error: {e}")
-        return
-
-    if not search_queries:
-        return
-
-    # 3. DuckDuckGoで検索
-    results = []
-    try:
-        with DDGS() as ddgs:
-            for item in search_queries:
-                query = item.get("query")
-                reason = item.get("reason", "")
-                
-                # 各クエリで1件だけ取得してバリエーションを出す
-                r = list(ddgs.text(query, max_results=1))
-                if r:
-                    # 検索結果に理由を付与して保存
-                    r[0]["reason"] = reason
-                    results.extend(r)
-    except Exception as e:
-        print(f"DDGS Error: {e}")
-        return
-
-    if not results:
-        return
-
-    # 重複排除
-    unique_results = []
-    seen_urls = set()
-    for res in results:
-        if res['href'] not in seen_urls:
-            unique_results.append(res)
-            seen_urls.add(res['href'])
-    
-    # 4. 投稿
-    embed = discord.Embed(title="🌐 興味の窓", description="あなたの発言から、興味がありそうな世界を覗いてみました。", color=0x00aaff)
-    for res in unique_results[:3]:
-        reason_text = f"\n💡 **選定理由**: {res.get('reason')}" if res.get('reason') else ""
-        embed.add_field(name=res['title'], value=f"{res['body'][:100]}...{reason_text}\n[リンク]({res['href']})", inline=False)
-    
-    keywords = [q.get("query") for q in search_queries]
-    embed.set_footer(text=f"Keywords: {', '.join(keywords)}")
-    await channel.send(embed=embed)
-    
-    # 5. 最終実行日時の更新
-    db = load_db()
-    if "recommendation" not in db["users"][user_id]:
-         db["users"][user_id]["recommendation"] = {}
-    
-    db["users"][user_id]["recommendation"]["last_run"] = datetime.now().isoformat()
-    save_db(db)
 
 
-@tasks.loop(hours=1)
-async def recommendation_loop():
-    """
-    定期的にユーザーの最終実行日時を確認し、設定された日数が経過していれば推薦を実行する
-    """
-    # 準備完了まで待つ
-    await bot.wait_until_ready()
-    
-    db = load_db()
-    now = datetime.now()
-    
-    # GUILD_IDからguildオブジェクトを取得（複数サーバー対応の場合はループが必要だが今回は単一前提）
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-         # 環境変数等でGUILD_IDが正しく設定されていない場合のフォールバック
-         # 接続しているギルドの最初を取得
-         if bot.guilds:
-             guild = bot.guilds[0]
-         else:
-             return
 
-    try:
-        updated = False
-        for user_id, data in db["users"].items():
-            config = data.get("recommendation", {})
-            
-            # 設定が無効ならスキップ
-            if not config.get("enabled", False):
-                continue
-            
-            interval_days = config.get("interval_days", 3)
-            last_run_str = config.get("last_run")
-            
-            should_run = False
-            if not last_run_str:
-                should_run = True
-            else:
-                last_run = datetime.fromisoformat(last_run_str)
-                delta = now - last_run
-                if delta.days >= interval_days:
-                    should_run = True
-            
-            if should_run:
-                # 実行処理 (非同期で個別に走らせる)
-                asyncio.create_task(perform_recommendation(user_id, data, guild))
-    except Exception as e:
-        print(f"Recommendation Loop Error: {e}")
+
 
 
 # ==========================================
@@ -558,8 +402,6 @@ async def recommendation_loop():
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
-    if not recommendation_loop.is_running():
-        recommendation_loop.start()
 
 @bot.event
 async def on_member_join(member):
@@ -602,9 +444,44 @@ async def on_message(message):
         await complete_onboarding_tutorial(message.author, message.channel, message.content)
         # complete_onboarding_tutorial内で完了ステータスに更新される
         
-        # 通常のポイント加算等はスキップするか、並行するかはお好みだが、
         # ここではチュートリアル回答もポイント対象にするため後続処理へ
     
+    # ==================================================
+    # 【機能1.5：ダイレクト招待 (Immediate Invite)】
+    # ==================================================
+    # timesチャンネルでのメンションを検知
+    if message.channel.name.startswith("times-") and message.mentions:
+        # チャンネルの持ち主か確認（簡易判定: チャンネル名とユーザー名の一致、またはDB）
+        # DBから持ち主判定
+        is_owner = False
+        owner_id = None
+        for uid, val in db["users"].items():
+            if val.get("channel_id") == message.channel.id:
+                owner_id = uid
+                break
+        
+        if owner_id == str(message.author.id):
+            # 持ち主による言及のみ発動
+            role_name = f"role-times-{message.author.name}"
+            role = discord.utils.get(message.guild.roles, name=role_name)
+            
+            if role:
+                invited_names = []
+                for mentioned in message.mentions:
+                    if mentioned.bot or mentioned.id == message.author.id:
+                        continue
+                    
+                    if role not in mentioned.roles:
+                        await mentioned.add_roles(role)
+                        invited_names.append(mentioned.name)
+                        try:
+                            await mentioned.send(f"⚡ **思考への招待** ⚡\n{message.author.name} があなたを思考の部屋に招待しました。\nチャンネル: {message.channel.mention}")
+                        except:
+                            pass
+                
+                if invited_names:
+                    await message.channel.send(f"🔓 **Direct Invite**: {', '.join(invited_names)} を部屋に招き入れました。")
+
     # ポイント加算 (+1pt)
     db["users"][user_id]["points"] += 1
     
@@ -636,7 +513,15 @@ async def on_message(message):
     # トリガー判定
     should_trigger = False
     forced_keyword = None
-    trigger_prob = 0.1 # デフォルト確率
+    trigger_prob = 0.05 # デフォルト確率 (Ver.X Update: 0.1 -> 0.05)
+
+    # 思考接続ON/OFF判定
+    user_conf = db["users"][user_id].get("connection_enabled", True) # デフォルトTrue
+    if not user_conf:
+        # OFFならトリガーしない（キーワード集計などはしてもよいが、今回はトリガー自体を抑制）
+        pass
+    else:    
+        # 1. キーワード判定 (優先)
     
     # 1. キーワード判定 (優先)
     for kw in CONNECTION_KEYWORDS:
@@ -707,10 +592,11 @@ async def status(ctx):
     await ctx.send(f"現在の保有ポイント: **{points} pt** 🪙\n露出回数: {expose_count}回 (次回コスト: {next_cost} pt)")
 
 @bot.command()
-async def expose(ctx):
+async def expose(ctx, mode: str = None):
     """
     【機能4：露出権の購入】
     ポイントを消費して、ランダムな3人に自分の部屋を24時間公開する
+    Usage: /expose [random]
     """
     db = load_db()
     user_id = str(ctx.author.id)
@@ -734,6 +620,24 @@ async def expose(ctx):
     if user_data["points"] < cost:
         await ctx.send(f"ポイントが足りません！ (必要: {cost} pt / 現在: {user_data.get('points', 0)} pt)")
         return
+
+    # ランダムモードの確認フロー
+    is_random_mode = (mode and mode.lower() == "random")
+    
+    if is_random_mode:
+        confirm_msg = await ctx.send("⚠️ **確認** ⚠️\n本当にランダムな対象に思考を公開しますか？ (y/n)")
+        
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["y", "n", "yes", "no"]
+            
+        try:
+            msg = await bot.wait_for('message', check=check, timeout=30.0)
+            if msg.content.lower() in ["n", "no"]:
+                await ctx.send("キャンセルしました。")
+                return
+        except asyncio.TimeoutError:
+            await ctx.send("タイムアウトしました。")
+            return
 
     # ポイント消費 & カウントアップ
     user_data["points"] -= cost
@@ -884,42 +788,62 @@ async def grant_access(ctx, receiver: discord.Member, target: discord.Member):
     else:
         await ctx.send(f"{receiver.name} さんは既に {target.name} さんのチャンネル閲覧権限を持っています。")
 
+
+
 @bot.command()
-async def auto_recommend(ctx, days: int = 0):
+async def disconnect(ctx, member: discord.Member):
     """
-    AIによる興味関心サイトの定期共有設定
-    引数: 日数 (例: /auto_recommend 3 で3日に1回)
-    引数が0の場合、機能をオフにする
+    【チャンネル管理】
+    指定したユーザーの閲覧権限を剥奪する (Kick/Ban)
+    """
+    db = load_db()
+    user_id = str(ctx.author.id)
+    user_data = db["users"].get(user_id)
+
+    if not user_data:
+        await ctx.send("ユーザーデータがありません。")
+        return
+        
+    # 実行場所が自分のチャンネルか確認
+    if ctx.channel.id != user_data["channel_id"]:
+        await ctx.send("自分のチャンネルでのみ実行できます。")
+        return
+
+    # ロール取得
+    role_name = f"role-times-{ctx.author.name}"
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    
+    if not role:
+        await ctx.send("チャンネルロールが見つかりません。")
+        return
+        
+    if role in member.roles:
+        await member.remove_roles(role)
+        await ctx.send(f"👋 {member.name} を部屋から退出させました。")
+    else:
+        await ctx.send(f"{member.name} は部屋にいません。")
+
+@bot.command()
+async def toggle_connection(ctx):
+    """
+    【思考接続設定】
+    AIによる思考接続（横槍）のON/OFFを切り替える
     """
     db = load_db()
     user_id = str(ctx.author.id)
     
     if user_id not in db["users"]:
-         await ctx.send("ユーザーデータがありません。")
-         return
-
-    if "recommendation" not in db["users"][user_id]:
-        db["users"][user_id]["recommendation"] = {}
-
-    if days > 0:
-        db["users"][user_id]["recommendation"]["enabled"] = True
-        db["users"][user_id]["recommendation"]["interval_days"] = days
-        # 初回実行を即座に行うか、次回ループで行うか。
-        # ここでは「設定した」だけにして、ループに任せるが、Last Runがない場合はループが即拾うはず。
-        # すでにLast Runがある場合、リセットしたいかどうか...とりあえずそのまま。
-        
-        save_db(db)
-        await ctx.send(f"✅ 設定が完了しました。\n{days}日に1回のペースで、あなたの興味関心に基づいた記事を推薦しますﾖ。\n(これより、初回の推薦を即座に実行します...)")
-        
-        # 即時実行
-        try:
-            await perform_recommendation(user_id, db["users"][user_id], ctx.guild)
-        except Exception as e:
-            await ctx.send(f"⚠️ 初回実行中にエラーが発生しました: {e}")
-    else:
-        db["users"][user_id]["recommendation"]["enabled"] = False
-        save_db(db)
-        await ctx.send("🛑 定期推薦をオフにしました。")
+        await ctx.send("ユーザーデータがありません。")
+        return
+    
+    current_status = db["users"][user_id].get("connection_enabled", True)
+    new_status = not current_status
+    
+    db["users"][user_id]["connection_enabled"] = new_status
+    save_db(db)
+    
+    status_msg = "ON" if new_status else "OFF"
+    await ctx.send(f"⚡ 思考接続機能を **{status_msg}** にしました。")
 
 # 実行
 bot.run(TOKEN)
