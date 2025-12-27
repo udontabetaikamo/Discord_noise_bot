@@ -19,7 +19,6 @@ GUILD_ID = 000000000000000000 # サーバーID（整数）を入れる
 CATEGORY_NAME = "🧠 Members" # 個室を作るカテゴリー名
 LOG_CHANNEL_NAME = "noise-log" # AIログを流すチャンネル名
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 CONNECTION_KEYWORDS = [
     # Social
     "地方創生", "地域活性化", "まちづくり", "コミュニティ", "移住", "教育", "福祉",
@@ -33,6 +32,7 @@ CONNECTION_KEYWORDS = [
 
 # 簡易データベース (今回はJSONファイルで代用)
 DB_FILE = "noise_db.json"
+BOT_VERSION = "Ver.X (2025-12-28-01)"
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
@@ -789,6 +789,13 @@ async def grant_access(ctx, receiver: discord.Member, target: discord.Member):
         await ctx.send(f"{receiver.name} さんは既に {target.name} さんのチャンネル閲覧権限を持っています。")
 
 
+
+@bot.command()
+async def version(ctx):
+    """
+    現在のボットのバージョンを確認する
+    """
+    await ctx.send(f"🤖 **System Version**: {BOT_VERSION}")
 
 @bot.command()
 async def disconnect(ctx, member: discord.Member):
